@@ -24,10 +24,14 @@ app = Flask(__name__, static_folder=STATIC_DIR, template_folder=BUILD_DIR)
 cors = CORS(app, resources={r"/*": {"origins": "*"}})
 
 # The cache and examples files base directories
-CACHE_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'cache')
+
+if os.environ.get('CHAINFORGE_CACHE_DIR') is not None:
+    CACHE_DIR = os.environ['CHAINFORGE_CACHE_DIR']
+else:
+    CACHE_DIR = os.path.join(os.path.expanduser('~'), '.cache', 'chainforge')
 EXAMPLES_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'examples')
 
-LLM_NAME_MAP = {} 
+LLM_NAME_MAP = {}
 for model in LLM:
     LLM_NAME_MAP[model.value] = model
 
@@ -51,7 +55,7 @@ class MetricType(Enum):
 HIJACKED_PRINT_LOG_FILE = None
 ORIGINAL_PRINT_METHOD = None
 def HIJACK_PYTHON_PRINT() -> None:
-    # Hijacks Python's print function, so that we can log 
+    # Hijacks Python's print function, so that we can log
     # the outputs when the evaluator is run:
     import builtins
     import tempfile
@@ -68,19 +72,19 @@ def HIJACK_PYTHON_PRINT() -> None:
             ORIGINAL_PRINT_METHOD(*args, **kwargs)
         else:
             ORIGINAL_PRINT_METHOD(*args, **kwargs, file=HIJACKED_PRINT_LOG_FILE)
-    
+
     # Replace the original print function with the custom print function
     builtins.print = hijacked_print
 
 def REVERT_PYTHON_PRINT() -> List[str]:
-    # Reverts back to original Python print method 
+    # Reverts back to original Python print method
     # NOTE: Call this after hijack, and make sure you've caught all exceptions!
     import builtins
     global ORIGINAL_PRINT_METHOD, HIJACKED_PRINT_LOG_FILE
-    
+
     logs = []
     if HIJACKED_PRINT_LOG_FILE is not None:
-        # Read the log file 
+        # Read the log file
         HIJACKED_PRINT_LOG_FILE.seek(0)
         logs = HIJACKED_PRINT_LOG_FILE.read().split('\n')
 
@@ -105,7 +109,7 @@ class ResponseInfo:
 
     def __str__(self):
         return self.text
-    
+
     def asMarkdownAST(self):
         import mistune
         md_ast_parser = mistune.create_markdown(renderer='ast')
@@ -130,14 +134,14 @@ def check_typeof_vals(arr: list) -> MetricType:
         else:
             # Mix of types beyond basic ones
             return MetricType.Unknown
-    
+
     def typeof_dict_vals(d):
         dict_val_type = typeof_set(set((type(v) for v in d.values())))
-        if dict_val_type == MetricType.Numeric: 
+        if dict_val_type == MetricType.Numeric:
             return MetricType.KeyValue_Numeric
-        elif dict_val_type == MetricType.Categorical: 
+        elif dict_val_type == MetricType.Categorical:
             return MetricType.KeyValue_Categorical
-        else: 
+        else:
             return MetricType.KeyValue_Mixed
 
     # Checks type of all values in 'arr' and returns the type
@@ -149,7 +153,7 @@ def check_typeof_vals(arr: list) -> MetricType:
             d, e = arr[i], arr[i+1]
             if set(d.keys()) != set(e.keys()):
                 raise Exception('The keys and size of dicts for evaluation results must be consistent across evaluations.')
-        
+
         # Then, we check the consistency of the type of dict values:
         first_dict_val_type = typeof_dict_vals(arr[0])
         for d in arr[1:]:
@@ -192,11 +196,11 @@ def run_over_responses(eval_func, responses: list, scope: str) -> list:
                 raise Exception('Unsupported types found in evaluation results. Only supported types for metrics are: int, float, bool, str.')
             else:
                 # Categorical, KeyValue, etc, we just store the items:
-                resp_obj['eval_res'] = { 
+                resp_obj['eval_res'] = {
                     'items': evals,
                     'dtype': eval_res_type.name,
                 }
-        else:  
+        else:
             # Run evaluator func over the entire response batch
             ev = eval_func([
                     ResponseInfo(text=r,
@@ -215,7 +219,7 @@ def run_over_responses(eval_func, responses: list, scope: str) -> list:
                     'type': ev_type.name,
                 }
             else:
-                resp_obj['eval_res'] = { 
+                resp_obj['eval_res'] = {
                     'items': [ev],
                     'type': ev_type.name,
                 }
@@ -232,8 +236,8 @@ def run_over_responses(eval_func, responses: list, scope: str) -> list:
 def index():
     # Get the index.html HTML code
     html_str = render_template("index.html")
-    
-    # Inject global JS variables __CF_HOSTNAME and __CF_PORT at the top so that the application knows 
+
+    # Inject global JS variables __CF_HOSTNAME and __CF_PORT at the top so that the application knows
     # that it's running from a Flask server, and what the hostname and port of that server is:
     html_str = html_str[:60] + f'<script>window.__CF_HOSTNAME="{HOSTNAME}"; window.__CF_PORT={PORT};</script>' + html_str[60:]
 
@@ -243,14 +247,14 @@ def index():
 def executepy():
     """
         Executes a Python function sent from JavaScript,
-        over all the `StandardizedLLMResponse` objects passed in from the front-end. 
+        over all the `StandardizedLLMResponse` objects passed in from the front-end.
 
-        POST'd data should be in the form: 
+        POST'd data should be in the form:
         {
-            'id': # a unique ID to refer to this information. Used when cache'ing responses. 
+            'id': # a unique ID to refer to this information. Used when cache'ing responses.
             'code': str,  # the body of the lambda function to evaluate, in form: lambda responses: <body>
             'responses': List[StandardizedLLMResponse]  # the responses to run on.
-            'scope': 'response' | 'batch'  # the scope of responses to run on --a single response, or all across each batch. 
+            'scope': 'response' | 'batch'  # the scope of responses to run on --a single response, or all across each batch.
                                            # If batch, evaluator has access to 'responses'. Only matters if n > 1 for each prompt.
             'script_paths': unspecified | List[str]  # the paths to scripts to be added to the path before the lambda function is evaluated
         }
@@ -291,16 +295,16 @@ def executepy():
         return jsonify({'error': f'Could not add script path to sys.path. Error message:\n{str(e)}'})
 
     # Create the evaluator function
-    # DANGER DANGER! 
+    # DANGER DANGER!
     try:
         exec(data['code'], globals())
 
-        # Double-check that there is an 'evaluate' method in our namespace. 
-        # This will throw a NameError if not: 
+        # Double-check that there is an 'evaluate' method in our namespace.
+        # This will throw a NameError if not:
         evaluate  # noqa
     except Exception as e:
         return jsonify({'error': f'Could not compile evaluator code. Error message:\n{str(e)}'})
-    
+
     evald_responses = []
     logs = []
     try:
@@ -319,13 +323,13 @@ def executepy():
 @app.route('/app/fetchExampleFlow', methods=['POST'])
 def fetchExampleFlow():
     """
-        Fetches the example flow data, given its filename. The filename should be the 
-        name of a file in the examples/ folder of the package. 
+        Fetches the example flow data, given its filename. The filename should be the
+        name of a file in the examples/ folder of the package.
 
         Used for loading examples in the Example Flow modal.
 
         POST'd data should be in form:
-        { 
+        {
             name: <str>  # The filename (without .cforge extension)
         }
     """
@@ -350,7 +354,7 @@ def fetchExampleFlow():
             filedata = json.load(f)
     except Exception as e:
         return jsonify({'error': f"Error parsing example flow at {filepath}: {str(e)}"})
-    
+
     ret = jsonify({'data': filedata})
     ret.headers.add('Access-Control-Allow-Origin', '*')
     return ret
@@ -361,12 +365,12 @@ def fetchOpenAIEval():
     """
         Fetches a preconverted OpenAI eval as a .cforge JSON file.
 
-        First detects if the eval is already in the cache. If the eval is already downloaded, 
-        it will be stored in examples/ folder of the package under a new oaievals directory. 
+        First detects if the eval is already in the cache. If the eval is already downloaded,
+        it will be stored in examples/ folder of the package under a new oaievals directory.
         If it's not in the cache, it will download it from the ChainForge webserver.
 
         POST'd data should be in form:
-        { 
+        {
             name: <str>  # The name of the eval to grab (without .cforge extension)
         }
     """
@@ -382,7 +386,7 @@ def fetchOpenAIEval():
         return jsonify({'error': f'Could not find an examples/ directory at path {dirpath}'})
 
     # Check if an oaievals subdirectory exists; if so, check for the file; if not create it:
-    oaievals_cache_dir = os.path.join(EXAMPLES_DIR, "oaievals")
+    oaievals_cache_dir = os.path.join(CACHE_DIR, "oaievals")
     if os.path.isdir(oaievals_cache_dir):
         filepath = os.path.join(oaievals_cache_dir, evalname + '.cforge')
         if os.path.isfile(filepath):
@@ -428,11 +432,11 @@ def fetchOpenAIEval():
 @app.route('/app/fetchEnvironAPIKeys', methods=['POST'])
 def fetchEnvironAPIKeys():
     keymap = {
-        'OPENAI_API_KEY': 'OpenAI', 
-        'ANTHROPIC_API_KEY': 'Anthropic', 
-        'PALM_API_KEY': 'Google', 
+        'OPENAI_API_KEY': 'OpenAI',
+        'ANTHROPIC_API_KEY': 'Anthropic',
+        'PALM_API_KEY': 'Google',
         'HUGGINGFACE_API_KEY': 'HuggingFace',
-        'AZURE_OPENAI_KEY': 'Azure_OpenAI', 
+        'AZURE_OPENAI_KEY': 'Azure_OpenAI',
         'AZURE_OPENAI_ENDPOINT': 'Azure_OpenAI_Endpoint'
     }
     d = { alias: os.environ.get(key) for key, alias in keymap.items() }
@@ -445,7 +449,7 @@ def fetchEnvironAPIKeys():
 def makeFetchCall():
     """
         Use in place of JavaScript's 'fetch' (with POST method), in cases where
-        cross-origin policy blocks responses from client-side fetches. 
+        cross-origin policy blocks responses from client-side fetches.
 
         POST'd data should be in form:
         {
@@ -498,10 +502,13 @@ async def callDalai():
     return ret
 
 
-def run_server(host="", port=8000, cmd_args=None):
-    global HOSTNAME, PORT
+def run_server(host="", port=8000, cmd_args=None, cache_dir=None):
+    global HOSTNAME, PORT, CACHE_DIR
     HOSTNAME = host
-    PORT = port    
+    PORT = port
+    if cache_dir is not None:
+        CACHE_DIR = cache_dir
+    print(CACHE_DIR)
     app.run(host=host, port=port)
 
 if __name__ == '__main__':
